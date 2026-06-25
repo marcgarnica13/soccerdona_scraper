@@ -36,7 +36,7 @@ class BaseSpider(scrapy.Spider):
                 parents = read_lines(parents, gzip.open)
             else:
                 parents = read_lines(parents, open)
-        elif not sys.stdin.isatty():
+        elif not sys.stdin.isatty() and self._stdin_is_readable():
             parents = [json.loads(line) for line in sys.stdin]
         else:
             parents = self.scrape_parents()
@@ -47,6 +47,17 @@ class BaseSpider(scrapy.Spider):
                 del parent['parent']
 
         self.entrypoints = parents
+
+    @staticmethod
+    def _stdin_is_readable():
+        # Under test runners (e.g. pytest) stdin is replaced by a guard object
+        # that is not a tty but raises on read. Treat such stdin as "no parents
+        # piped in" so direct spider instantiation falls through to
+        # scrape_parents() instead of erroring.
+        try:
+            return sys.stdin.readable()
+        except (ValueError, OSError):
+            return False
 
     def scrape_parents(self):
         if not os.environ.get('SCRAPY_CHECK'):
