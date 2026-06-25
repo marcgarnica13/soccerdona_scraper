@@ -70,7 +70,7 @@ class PlayersSpider(BaseSpider):
             'type': 'player',
             'parent': parent,
             'source': 'soccerdonna',
-            'href': response.url.replace('https://www.soccerdonna.de', ''),
+            'href': response.url.replace(self.base_url, ''),
             'player_id': extract_entity_id(response.url),
             'name': name,
             'last_name': self._last_name(name),

@@ -100,8 +100,8 @@ class ClubsSpider(BaseSpider):
             'players': players,
         }
 
-    @staticmethod
-    def _club_href(url):
-        # Normalize the squad URL back to a /startseite/ club href for parent linkage.
-        path = url.replace('https://www.soccerdonna.de', '')
-        return path.replace('/kader/', '/startseite/')
+    def _club_href(self, url):
+        # Normalize the squad URL back to a /startseite/ club href for parent
+        # linkage. Strip the configured base_url (not a hardcoded host) so a
+        # custom `-a base_url=` run doesn't leak the full URL into emitted hrefs.
+        return url.replace(self.base_url, '').replace('/kader/', '/startseite/')
