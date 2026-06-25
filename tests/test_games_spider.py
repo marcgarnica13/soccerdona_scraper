@@ -18,6 +18,23 @@ def test_parse_game_core_fields():
     assert isinstance(game['events'], list)
     # the report has Goals/Substitutions/Cards -> at least one event
     assert len(game['events']) >= 1
+    # both teams' formations are captured from the Formation section
+    assert 'formation' in game['home_club'] and 'formation' in game['away_club']
+    assert isinstance(game['home_club']['formation'], str) and game['home_club']['formation']
+    assert isinstance(game['away_club']['formation'], str) and game['away_club']['formation']
+
+
+def test_substitution_captures_both_players():
+    spider = GamesSpider()
+    resp = load_sample('game', 'spielbericht_153373.html')
+    game = list(spider.parse_game(resp, parent=PARENT))[0]
+    subs = [e for e in game['events'] if e['type'] == 'substitution']
+    assert subs  # the anchor has 10 substitutions
+    assert any(
+        e.get('player_in') and e['player_in'].get('href')
+        and e.get('player_out') and e['player_out'].get('href')
+        for e in subs
+    )
 
 
 def test_game_events_well_formed():

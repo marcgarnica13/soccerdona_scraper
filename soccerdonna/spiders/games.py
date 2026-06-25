@@ -8,6 +8,8 @@ MINUTE_RE = re.compile(r'(\d{1,3})\s*\.\s*min', re.IGNORECASE)
 # ISO date embedded in the header date link, e.g. datum_2026-05-31.html
 ISO_DATE_RE = re.compile(r'(\d{4}-\d{2}-\d{2})')
 DE_DATE_RE = re.compile(r'(\d{2}\.\d{2}\.\d{4})')
+# Formation tag, e.g. "<b class='s10'>4-2-3-1:</b>" -> "4-2-3-1".
+FORMATION_RE = re.compile(r'(\d(?:-\d){1,4})')
 
 
 class GamesSpider(GamesUrlsSpider):
@@ -52,6 +54,8 @@ class GamesSpider(GamesUrlsSpider):
         # "DD.MM.YYYY" label. Prefer ISO; fall back to the German label.
         date = self._date(response)
 
+        home_formation, away_formation = self._formations(response)
+
         events = []
         events += self._parse_event_section(response, 'Goals', 'goal', home, away)
         events += self._parse_event_section(response, 'Substitutions', 'substitution', home, away)
@@ -64,8 +68,8 @@ class GamesSpider(GamesUrlsSpider):
             'game_id': extract_entity_id(response.url),
             'href': response.url.replace(self.base_url, ''),
             'date': date,
-            'home_club': {'href': home},
-            'away_club': {'href': away},
+            'home_club': {'href': home, 'formation': home_formation},
+            'away_club': {'href': away, 'formation': away_formation},
             'result': result,
             'events': events,
         }
@@ -75,8 +79,9 @@ class GamesSpider(GamesUrlsSpider):
 
         The header banner marks the teams with ``<img name="wappen_h">`` (home)
         and ``<img name="wappen_g">`` (guest/away); each is wrapped in an
-        ``<a href*="verein_">``. This is unambiguous even though ~48 verein links
-        exist elsewhere on the page (line-ups, minifotos, stadium, etc.).
+        ``<a href*="verein_">``. Anchoring on these named images is unambiguous
+        (the two team crests are explicitly tagged home vs guest) regardless of
+        any other verein links on the page.
         """
         home = self._club_for_wappen(response, 'wappen_h')
         away = self._club_for_wappen(response, 'wappen_g')
@@ -86,6 +91,27 @@ class GamesSpider(GamesUrlsSpider):
         href = response.xpath(
             f'//a[.//img[@name="{name}"]]/@href').get()
         return _to_en(href) if href else None
+
+    def _formations(self, response):
+        """Home/away formation strings (e.g. "4-4-2") from the Formation section.
+
+        Each side's line-up table opens with a ``<b class="s10">4-4-2:</b>`` tag;
+        the left ``fl`` div is the home team, the right ``fr`` div the away team
+        (same column convention as the event sections). Returns None for a side
+        whose formation is absent.
+        """
+        return (self._formation_for_side(response, 'fl'),
+                self._formation_for_side(response, 'fr'))
+
+    def _formation_for_side(self, response, side):
+        for raw in response.xpath(
+                '//h2[contains(normalize-space(.), "Formation")]'
+                f'/following-sibling::div[contains(@class, "{side}")][1]'
+                '//b[@class="s10"]/text()').getall():
+            m = FORMATION_RE.search(raw)
+            if m:
+                return m.group(1)
+        return None
 
     def _date(self, response):
         iso = response.css('a[href*="datum_"]::attr(href)').re_first(
@@ -116,10 +142,32 @@ class GamesSpider(GamesUrlsSpider):
                 text = self.safe_strip(' '.join(row.css('::text').getall()))
                 mm = MINUTE_RE.search(text or '')
                 minute = int(mm.group(1)) if mm else None
-                events.append({
+                event = {
                     'type': event_type,
                     'minute': minute,
-                    'player': {'href': _to_en(player_href)},
                     'club': {'href': club} if club else None,
-                })
+                }
+                if event_type == 'substitution':
+                    event.update(self._substitution_players(row))
+                else:
+                    event['player'] = {'href': _to_en(player_href)}
+                events.append(event)
         return events
+
+    def _substitution_players(self, row):
+        """Resolve the off/on players of a substitution ``<tr>``.
+
+        Each sub row has the outgoing player in the left ``td.s10.al`` cell
+        (``auswechslung.gif``) and the incoming player in the right ``td.s10.ar``
+        cell (``einwechslung.gif``). ``player`` mirrors ``player_out`` so every
+        event keeps a uniform ``player`` key.
+        """
+        out_href = row.css('td.al a[href*="spieler_"]::attr(href)').get()
+        in_href = row.css('td.ar a[href*="spieler_"]::attr(href)').get()
+        player_out = {'href': _to_en(out_href)} if out_href else None
+        player_in = {'href': _to_en(in_href)} if in_href else None
+        return {
+            'player': player_out,
+            'player_out': player_out,
+            'player_in': player_in,
+        }
