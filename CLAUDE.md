@@ -5,10 +5,16 @@ Scrapy project that collects women's football data from
 mirrors transfermarkt-scraper (with an added `source: "soccerdonna"` marker).
 
 ## Status
-**Plan 1 (player backbone) implemented:**
-`confederations → competitions → clubs → players → appearances`, plus the
-`clubs_by_url` / `players_from_file` bypass spiders. Plan 2 (games / fixtures /
-lineups) is not yet built.
+**Both branches implemented — 11 spiders, all tests green.**
+- **Plan 1 (player backbone):**
+  `confederations → competitions → clubs → players → appearances`, plus the
+  `clubs_by_url` / `players_from_file` bypass spiders.
+- **Plan 2 (games branch):** `games_urls → games → game_lineups`, plus the
+  `games_by_url` bypass spider.
+
+The 11 spiders: `appearances`, `clubs`, `clubs_by_url`, `competitions`,
+`confederations`, `game_lineups`, `games`, `games_by_url`, `games_urls`,
+`players`, `players_from_file`.
 
 ## Build / run / test
 - **Install:** `poetry install`

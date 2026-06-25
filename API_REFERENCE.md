@@ -102,9 +102,54 @@ poetry run scrapy crawl appearances -a parents=players.json -a season=2024 > app
 
 ---
 
+## Games branch
+
+A second branch off `competition` items: fixtures, full match reports, and
+lineups. `games` extends `games_urls`; `games_by_url` extends `games`. See
+`DOCUMENTATION.md` ("The games branch") for the matchday-walk discovery.
+
+### `games_urls`
+
+* **Input:** `competition` items.
+* **Output:** one **lightweight** `game` item per fixture (`game_id`, `href`,
+  `date`, `home_club`/`away_club` hrefs, `result`) — **no events** — discovered
+  by walking the matchday-overview pages. The fast path.
+* **Note:** visits every matchday, so a full season takes a few minutes with
+  AutoThrottle. League competitions only (cup/lower tiers may lack overviews →
+  zero rows).
+
+```bash
+grep ESP1 competitions.json | poetry run scrapy crawl games_urls > games_urls.json
+```
+
+### `games`
+
+* **Input:** `competition` items (same discovery as `games_urls`).
+* **Output:** one **full** `game` item per fixture — adds per-club `formation`
+  and the `events[]` array (goals / substitutions / cards) by following each
+  fixture to its match report.
+
+```bash
+grep ESP1 competitions.json | poetry run scrapy crawl games > games.json
+```
+
+### `game_lineups`
+
+* **Input:** `game` items. Each `href` is routed to its `aufstellung/` lineup
+  page.
+* **Output:** one `game_lineup` item per game (each team's starting XI +
+  substitutes; `formation` is always `null` — it lives on the `game` item).
+
+```bash
+printf '%s\n' '{"type":"game","href":"/en/x/index/spielbericht_153373.html"}' \
+  | poetry run scrapy crawl game_lineups > game_lineups.json
+```
+
+---
+
 ## Bypass spiders
 
-These let you start mid-hierarchy from a hand-supplied URL list. Both override
+These let you start mid-hierarchy from a hand-supplied URL list. All override
 `start_requests` and therefore **ignore `-a season`** (they fetch the exact hrefs
 given).
 
@@ -129,9 +174,23 @@ poetry run scrapy crawl clubs_by_url -a parents=my_clubs.json > clubs.json
 poetry run scrapy crawl players_from_file -a parents=players_to_update.json > players.json
 ```
 
+### `games_by_url`
+
+* **Input:** `game` items (any `…/spielbericht_{id}.html` href; an
+  `/aufstellung/` href is rerouted to `/index/`). The report loads by id
+  regardless of slug.
+* **Output:** **full** `game` items with events (same as `games`).
+* **Reuses:** `GamesSpider.parse_game`.
+
+```bash
+printf '%s\n' '{"type":"game","href":"/en/x/index/spielbericht_153373.html"}' \
+  | poetry run scrapy crawl games_by_url > games.json
+```
+
 ---
 
 ## Item shapes
 
 See `SCHEMA.md` for the full field list and a real example of each item type
-(`confederation`, `competition`, `club` + inline player, `player`, `appearance`).
+(`confederation`, `competition`, `club` + inline player, `player`, `appearance`,
+`game` + `events[]`, `game_lineup`).

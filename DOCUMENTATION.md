@@ -27,7 +27,8 @@ Because input and output are both JSON-Lines, spiders compose by piping or via
 `-a parents=<file>`:
 
 ```
-confederations → competitions → clubs → players → appearances
+confederations → competitions → clubs → players → appearances   (player backbone)
+                 competitions → games_urls → games → game_lineups (games branch)
 ```
 
 ### Parent loading (`spiders/common.py` — `BaseSpider`)
@@ -111,6 +112,56 @@ straight from the source: country names are rendered in **German even on the
 links on the index are mostly under `/de/` and are normalized to `/en/` so that
 all downstream club/player pages and their child links come back in English.
 
+## The games branch
+
+A second branch hangs off the same `competition` items and produces fixtures,
+match reports, and lineups:
+
+| Stage          | Input (parent) | Page fetched                                   | Output item    |
+|----------------|----------------|------------------------------------------------|----------------|
+| `games_urls`   | `competition`  | per-matchday overview (`spieltagsuebersicht`)  | `game` metadata (× per fixture) |
+| `games`        | `competition`  | each match report (`index/spielbericht_{id}`)  | `game` + `events[]` (× per fixture) |
+| `games_by_url` | `game`         | the same match report, by URL (bypass)         | `game` + `events[]` |
+| `game_lineups` | `game`         | lineup page (`aufstellung/spielbericht_{id}`)  | `game_lineup`  |
+
+`games` extends `games_urls` (sharing matchday discovery); `games_by_url` extends
+`games` (sharing `parse_game`). So the four spiders share parse logic by
+inheritance rather than duplication.
+
+### Game discovery (the matchday-overview walk)
+
+A competition's `startseite` page links the **current** matchday-overview page:
+`/en/{slug}/spieltagsuebersicht/wettbewerb_{CODE}_{SEASON}_{MATCHDAY}.html`. Each
+overview page lists that round's fixtures **and** carries navigation to the
+prev/next matchdays. The spiders follow the current overview, then walk the nav
+graph — following every not-yet-seen `spieltagsuebersicht/wettbewerb_…` link and
+deduping by matchday number — until every matchday has been visited. The site's
+own matchday navigation is **JavaScript-driven**, so the spiders find the
+overview links by **regex on the raw HTML** rather than relying on rendered nav
+widgets. Within an overview page the fixtures live in `p.drunter` sibling
+elements, each carrying the two `verein_{id}` club links and the
+`spielbericht_{id}.html` report link.
+
+### Report page vs lineup page
+
+Each fixture has **two** pages:
+
+* the **match report** at `index/spielbericht_{id}.html` — sectioned by
+  `<h2>` headers (Formation / Goals / Substitutions / Cards). `games` /
+  `games_by_url` parse this into the `game` item: the two clubs, the result, both
+  formations, and the `events[]` array. **Minutes are plain text** in the event
+  rows — soccerdonna does **not** use Transfermarkt's CSS-sprite minute encoding,
+  so there is no `background-position` decoding to do.
+* the **lineup page** at `aufstellung/spielbericht_{id}.html` — the full starting
+  XI and substitutes per team. `game_lineups` parses this into the `game_lineup`
+  item. The aufstellung page has **no formation string**, so
+  `game_lineup.{home,away}_club.formation` is always `null`; the formation is
+  captured on the `game` item from the match report instead.
+
+The report loads by **id regardless of slug**, so `games_by_url` and
+`game_lineups` accept any `…/spielbericht_{id}.html` href and route it to the
+`index/` (report) or `aufstellung/` (lineup) sub-page as needed.
+
 ## Politeness
 
 soccerdonna is a small community site, so the crawler is deliberately gentle
@@ -143,5 +194,14 @@ slice. That is expected.
 4. **Historical-season URL grammar is verified only for competitions.** The
    `_{year}` filename suffix is confirmed for `wettbewerb_*`; for clubs/players
    it is best-effort. The current-season default is the supported path.
-5. **Plan 2 (games / fixtures / lineups) is not implemented.** The match-report
-   branch (`games_urls`, `games`, `game_lineups`) is a separate, future plan.
+5. **Cup / lower-tier competitions may have no matchday overviews.** The games
+   branch discovers fixtures by walking `spieltagsuebersicht` overview pages,
+   which exist for **league** competitions. Cup or lower-tier competitions may
+   lack them entirely, in which case `games_urls` / `games` degrade to **zero
+   rows** (they do not crash).
+6. **`game_lineup.formation` is always `null`.** The `aufstellung` lineup page
+   carries no formation string; the formation is emitted on the `game` item from
+   the match report instead (see "The games branch" above).
+7. **Stadium / attendance are not emitted.** Women's match reports are often
+   sparse on these; the games branch focuses on clubs, result, formations, and
+   events.

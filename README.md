@@ -10,10 +10,10 @@ the same pipelines. Every top-level item additionally carries a
 `"source": "soccerdonna"` marker so soccerdonna rows are never confused with
 Transfermarkt rows.
 
-> **Scope:** This is **Plan 1 — the player backbone**
-> (`confederations → competitions → clubs → players → appearances`). The games
-> branch (fixtures, match reports, lineups) is Plan 2 and is **not yet
-> implemented**.
+> **Scope:** Both planned branches are implemented. **Plan 1 — the player
+> backbone** (`confederations → competitions → clubs → players → appearances`)
+> and **Plan 2 — the games branch** (`games_urls → games → game_lineups`, plus
+> the `games_by_url` bypass). The project has **11 spiders** in total.
 
 ## Repository
 
@@ -38,9 +38,14 @@ Each spider reads **parent** items (JSON-Lines) on stdin or from a file
 each other:
 
 ```
-confederations  →  competitions  →  clubs  →  players  →  appearances
- (synthetic root)    (index page)    (squad)   (profile)   (per-match)
+                  ┌─ players  →  appearances        (player backbone)
+confederations  →  competitions  →  clubs
+                  └─ games_urls  →  games  →  game_lineups   (games branch)
+ (synthetic root)    (index page)
 ```
+
+The two branches share the same `competition` items as input. The **player
+backbone**:
 
 * `confederations` — synthetic root (soccerdonna has no confederations); emits a
   single item pointing at the competitions index.
@@ -53,8 +58,21 @@ confederations  →  competitions  →  clubs  →  players  →  appearances
 * `appearances` — for each player, fetches the performance-data
   (`leistungsdaten`) page and emits one `appearance` item per match.
 
-Two **bypass** spiders let you start in the middle from a hand-supplied URL list:
-`clubs_by_url` and `players_from_file`.
+The **games branch**:
+
+* `games_urls` — for each competition, walks the per-matchday overview pages and
+  emits one lightweight `game` item per fixture (date, teams, result) **without**
+  opening each match report (the fast path).
+* `games` — extends `games_urls`: instead of metadata, follows every fixture to
+  its full match report (`index/spielbericht_{id}.html`) and emits a `game` item
+  with formations and a `events[]` array (goals, substitutions, cards).
+* `game_lineups` — for each game, fetches the separate lineup
+  (`aufstellung/spielbericht_{id}.html`) page and emits a `game_lineup` item with
+  each team's starting XI and substitutes.
+
+Three **bypass** spiders let you start in the middle from a hand-supplied URL
+list: `clubs_by_url`, `players_from_file`, and `games_by_url` (parse specific
+match reports by URL, skipping matchday discovery).
 
 ## Run examples
 
@@ -98,6 +116,33 @@ poetry run scrapy crawl clubs_by_url -a parents=my_clubs.json > clubs.json
 
 # Re-scrape specific players from a URL list (skips the whole hierarchy)
 poetry run scrapy crawl players_from_file -a parents=players_to_update.json > players.json
+```
+
+### Games branch
+
+The full games chain on the Spanish first tier (this visits every matchday, so
+it takes a few minutes with AutoThrottle):
+
+```bash
+# Full match reports (with events) for every ESP1 fixture
+grep ESP1 samples/output/competitions.json | poetry run scrapy crawl games > games.json
+```
+
+`samples/output/{games,game_lineups}.json` were generated deterministically via
+the `games_by_url` / `game_lineups` bypass on two anchor games:
+
+```bash
+# Full match reports (clubs, formations, events) by URL
+printf '%s\n%s\n' \
+  '{"type":"game","href":"/en/x/index/spielbericht_153373.html"}' \
+  '{"type":"game","href":"/en/x/index/spielbericht_153376.html"}' \
+  | poetry run scrapy crawl games_by_url > samples/output/games.json
+
+# Lineups (starting XI + substitutes) for the same games
+printf '%s\n%s\n' \
+  '{"type":"game","href":"/en/x/index/spielbericht_153373.html"}' \
+  '{"type":"game","href":"/en/x/index/spielbericht_153376.html"}' \
+  | poetry run scrapy crawl game_lineups > samples/output/game_lineups.json
 ```
 
 ### Historical seasons
