@@ -15,6 +15,13 @@ Transfermarkt rows.
 > branch (fixtures, match reports, lineups) is Plan 2 and is **not yet
 > implemented**.
 
+## Repository
+
+```bash
+git clone git@github.com:marcgarnica13/soccerdona_scraper.git
+cd soccerdona_scraper
+```
+
 ## Install
 
 ```bash
@@ -128,3 +135,13 @@ poetry run pytest
 Tests run **offline** against committed HTML samples in `samples/pages/` (the raw
 input the parsers read — distinct from `samples/output/`, the generated
 JSON-Lines).
+
+## Disclaimer
+
+This project is for research and educational purposes. It scrapes publicly
+available data from soccerdonna.de; respect the site's `robots.txt` and terms of
+use, and crawl politely (the spiders enable AutoThrottle by default).
+
+## License
+
+Released under the [MIT License](LICENSE).
