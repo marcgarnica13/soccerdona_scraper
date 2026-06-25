@@ -31,3 +31,19 @@ def test_every_player_sample_has_core_fields():
         # DOB may be None for an odd profile, but the key must exist.
         assert 'date_of_birth' in player, filename
         assert 'national_career' in player, filename
+
+
+def test_gemma_font_national_career():
+    # The team name is rendered in German even on the /en/ page (observed live
+    # 2026-06-25): "Spanien U23" (Spain U23), 4 caps.
+    spider = PlayersSpider()
+    resp = load_sample('player', 'spieler_38461.html')
+    player = list(spider.parse(resp, parent=PARENT))[0]
+
+    career = player['national_career']
+    assert career, 'expected at least one national-team entry'
+    spain_u23 = next(e for e in career if 'Spanien U23' in (e['name'] or ''))
+    assert spain_u23['national_team_id'] == '8954'
+    assert spain_u23['href'].endswith('nationalmannschaft_8954.html')
+    assert spain_u23['matches'] == 4
+    assert spain_u23['goals'] == 0
