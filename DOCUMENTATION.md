@@ -172,8 +172,10 @@ soccerdonna is a small community site, so the crawler is deliberately gentle
 * **AutoThrottle on** — `AUTOTHROTTLE_ENABLED = True`, start delay 1.0s, max delay
   10.0s, target concurrency 1.0.
 * `DOWNLOAD_DELAY = 1.0`, `CONCURRENT_REQUESTS_PER_DOMAIN = 2`.
-* `CloseSpider` extension capped at 500 items; `HTTPCACHE_ENABLED = True`
-  (development aid — responses are cached under `httpcache/`).
+* The `CloseSpider` extension is loaded (priority 500) but **no item/page cap is
+  set** (`CLOSESPIDER_PAGECOUNT = 0`), so crawls run to completion — a full ESP1
+  season yields ~240 games. `HTTPCACHE_ENABLED = True` (development aid —
+  responses are cached under `httpcache/`).
 
 Because of these delays, a full chain run takes a minute or two even on a narrow
 slice. That is expected.
