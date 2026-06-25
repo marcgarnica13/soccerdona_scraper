@@ -18,6 +18,9 @@ def test_gemma_font_profile_fields():
     assert player['foot'] == 'right'
     assert player['height'] == '1,65'
     assert player['current_market_value'] == 50000
+    assert player['last_name'] == 'Font'
+    assert isinstance(player['current_club'], dict)
+    assert 'verein_1132' in player['current_club']['href']
 
 
 def test_every_player_sample_has_core_fields():
@@ -31,6 +34,8 @@ def test_every_player_sample_has_core_fields():
         # DOB may be None for an odd profile, but the key must exist.
         assert 'date_of_birth' in player, filename
         assert 'national_career' in player, filename
+        assert 'current_club' in player, filename
+        assert 'last_name' in player, filename
 
 
 def test_gemma_font_national_career():

@@ -37,13 +37,16 @@ class PlayersSpider(BaseSpider):
             )
 
         dob_raw = field('Date of birth:')
+        name = self._name(response)
         yield {
             'type': 'player',
             'parent': parent,
             'source': 'soccerdonna',
             'href': response.url.replace('https://www.soccerdonna.de', ''),
             'player_id': extract_entity_id(response.url),
-            'name': self._name(response),
+            'name': name,
+            'last_name': self._last_name(name),
+            'current_club': self._current_club(response),
             'name_in_home_country': field('Name in native country:'),
             'date_of_birth': parse_date_de(dob_raw),
             'place_of_birth': field('Place of birth:'),
@@ -64,6 +67,28 @@ class PlayersSpider(BaseSpider):
         if not raw:
             return raw
         return re.sub(r'^\d+\s+', '', raw).strip()
+
+    def _last_name(self, name):
+        # The last whitespace-delimited token of the display name (TM uses the
+        # same simple definition). "Gemma Font" -> "Font".
+        if not name:
+            return None
+        tokens = name.split()
+        return tokens[-1] if tokens else None
+
+    def _current_club(self, response):
+        """The player's current club as {'href': <club href>} (or None).
+
+        The current club is the first `verein_{id}` link inside the player-info
+        header table (class="tabelle_spieler"), the row directly under the h1.
+        We scope to that table so we never pick up unrelated verein links (e.g.
+        former clubs, sidebar/career links) elsewhere on the page, and we exclude
+        national-team (`nationalmannschaft_`) links by construction.
+        """
+        href = response.css(
+            'table.tabelle_spieler a[href*="verein_"]::attr(href)'
+        ).get()
+        return {'href': href} if href else None
 
     def _national_career(self, response):
         """Parse the "National team career" table into a list of entries.
