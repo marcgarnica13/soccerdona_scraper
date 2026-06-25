@@ -17,8 +17,19 @@ class ClubsSpider(BaseSpider):
 
     def parse(self, response, parent):
         """Competition page -> follow each club's squad (kader) page."""
-        # Club links look like /en/{slug}/startseite/verein_{id}.html.
-        club_hrefs = set(response.css('a[href*="verein_"]::attr(href)').getall())
+        # Scope club links to the standings table only. A page-wide
+        # a[href*="verein_"] also grabs transfers/rumours sidebars (free-agent
+        # `vereinslos`, foreign-league teams, reserve sides), polluting the
+        # crawl. The first table that contains verein_ links is the standings
+        # table, holding exactly the league members.
+        # NOTE: cup / international competition pages may not have a standings
+        # table in this exact form; those are tracked separately and may need
+        # revisiting here.
+        members_tables = response.xpath('//table[.//a[contains(@href,"verein_")]]')
+        scope = members_tables[0] if members_tables else None
+        club_hrefs = (
+            set(scope.css('a[href*="verein_"]::attr(href)').getall()) if scope else set()
+        )
         for href in club_hrefs:
             if 'verein_' not in href:
                 continue
@@ -83,9 +94,9 @@ class ClubsSpider(BaseSpider):
             'parent': parent,
             'source': 'soccerdonna',
             'href': self._club_href(response.url),
-            'name': self.safe_strip(
-                response.css('h1').xpath('normalize-space(string())').get()
-            ),
+            # Club name only: the header h1 nests country + federation links;
+            # the club name is the first <a id="vereinsinfo"> within it.
+            'name': self.safe_strip(response.css('h1 a#vereinsinfo::text').get()),
             'players': players,
         }
 
