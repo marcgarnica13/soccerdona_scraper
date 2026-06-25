@@ -82,7 +82,7 @@ class AppearancesSpider(BaseSpider):
 
     def parse(self, response, parent):
         """Performance-data page -> one `appearance` per per-match detail row."""
-        href = response.url.replace('https://www.soccerdonna.de', '')
+        href = response.url.replace(self.base_url, '')
         player_id = extract_entity_id(response.url)
 
         # Each per-match detail table is preceded by an `<a name="{CODE}">`
@@ -190,10 +190,22 @@ class AppearancesSpider(BaseSpider):
         ).get()
         return name or None
 
+    # A result cell holds a digit:digit scoreline (e.g. "8:0", "0:0", "1:1").
+    _RESULT_RE = re.compile(r'^\d+:\d+$')
+
     def _result(self, row):
-        return self.safe_strip(
-            row.css('td.green::text, td.red::text, td[class*="ac s10 green"]::text').get()
-        )
+        # Match the per-match result cell by STRUCTURE, not colour. Wins/losses
+        # carry a colour class (``td.green`` / ``td.red``), but DRAWS render as a
+        # plain ``td class="ac s10"`` with no colour class, so a colour-based
+        # selector silently dropped them. The result is the (single) cell whose
+        # text is an ``N:N`` scoreline; scan the row's cells and return the first
+        # such match. Rows with no scoreline (e.g. genuinely result-less rows)
+        # yield None.
+        for cell in row.css('td'):
+            text = self.safe_strip(cell.css('::text').get())
+            if text and self._RESULT_RE.match(text):
+                return text
+        return None
 
     def _match_id(self, row):
         href = row.css('a[href*="spielbericht_"]::attr(href)').get()

@@ -1,3 +1,5 @@
+import re
+
 from tests.conftest import load_sample, iter_samples
 from soccerdonna.spiders.appearances import AppearancesSpider
 
@@ -32,6 +34,22 @@ def test_gemma_font_appearance_row_is_well_formed():
         assert a['opponent']['type'] == 'club'
         assert a['opponent']['href'].startswith('/en/')
     assert any(a['minutes_played'] for a in apps)
+
+
+def test_appearances_capture_draw_results():
+    # Regression: the result cell must be matched by STRUCTURE (an N:N
+    # scoreline), not by colour class. Wins/losses carry a colour class
+    # (td.green / td.red); DRAWS render as a plain `td class="ac s10"` with no
+    # colour, so a colour-only selector silently dropped them. The Gemma Font
+    # sample has draws (0:0, 1:1), so at least one captured result must be a draw.
+    spider = AppearancesSpider()
+    resp = load_sample('appearance', 'spieler_38461.html')
+    apps = [a for a in spider.parse(resp, parent=PARENT) if isinstance(a, dict)]
+    results = [a['result'] for a in apps if a['result']]
+    # Every captured result is a digit:digit scoreline.
+    assert all(re.match(r'^\d+:\d+$', r) for r in results)
+    # At least one DRAW (home == away score) is now captured.
+    assert any(r.split(':')[0] == r.split(':')[1] for r in results)
 
 
 def test_every_appearance_sample_parses():
