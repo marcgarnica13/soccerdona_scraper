@@ -37,7 +37,13 @@ class BaseSpider(scrapy.Spider):
             else:
                 parents = read_lines(parents, open)
         elif not sys.stdin.isatty() and self._stdin_is_readable():
-            parents = [json.loads(line) for line in sys.stdin]
+            parents = [json.loads(line) for line in sys.stdin if line.strip()]
+            # An empty/closed stdin (no data piped in) is indistinguishable from
+            # a missing pipe in non-interactive contexts. Fall back to the
+            # spider's synthetic root so e.g. `scrapy crawl confederations`
+            # works without an explicit parents pipe.
+            if not parents:
+                parents = self.scrape_parents()
         else:
             parents = self.scrape_parents()
 
