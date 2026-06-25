@@ -22,6 +22,18 @@ def test_competitions_includes_spanish_first_tier():
     assert esp1['source'] == 'soccerdonna'
 
 
+def test_international_competition_not_attributed_to_stale_country():
+    # The UEFA Women's Champions League (CL) lives in the international section,
+    # which has no country flag. It must NOT inherit the previous country
+    # (observed bug: it was tagged as Wales). Country should be None and the
+    # tier heuristic must not produce a bare numeric competition_type.
+    items = _parse_index()
+    cl = next(i for i in items if i['competition_code'] == 'CL')
+    assert cl['country_name'] in (None, 'international')
+    assert cl['country_id'] in (None, 'international')
+    assert cl['competition_type'] is None or not cl['competition_type'].isdigit()
+
+
 def test_every_competition_has_required_fields():
     # Structural invariant across the whole index page.
     items = _parse_index()
@@ -30,4 +42,5 @@ def test_every_competition_has_required_fields():
         assert i['type'] == 'competition'
         assert i['competition_code']
         assert i['href']
-        assert i['country_name']
+        # country_name may legitimately be None for international competitions.
+        assert 'country_name' in i

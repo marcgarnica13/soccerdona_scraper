@@ -37,6 +37,14 @@ class CompetitionsSpider(BaseSpider):
                 m = re.search(r'/flaggen/([0-9]+)\.(?:gif|png)', flag_src, re.IGNORECASE)
                 current_country_id = m.group(1) if m else None
                 current_country_name = flag_title  # German on source
+            elif row.css('td.al.fb'):
+                # A section header cell (td.al.fb) with no flag image marks the
+                # start of a flag-less block: the international competitions
+                # ("Internationaler Vereinspokal") and the national-team sections
+                # that follow it. Reset the country context so those competitions
+                # are not mis-attributed to the previous country (e.g. Wales).
+                current_country_id = None
+                current_country_name = None
 
             comp_href = row.css('a[href*="wettbewerb_"]::attr(href)').get()
             if not comp_href:
@@ -57,6 +65,11 @@ class CompetitionsSpider(BaseSpider):
             cells = [c for c in cells if c]
             if cells:
                 tier_text = cells[0]
+            # International rows have no tier label cell: the first td.ac is a
+            # numeric stat (Teams count), which would otherwise yield a junk
+            # numeric competition_type (e.g. "18"). Only accept a real label.
+            if tier_text and re.fullmatch(r'[0-9.\s]+', tier_text):
+                tier_text = None
             comp_type = underscore(parameterize(tier_text)) if tier_text else None
 
             yield {
