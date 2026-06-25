@@ -4,6 +4,39 @@ from soccerdonna.spiders.players import PlayersSpider
 PARENT = {'type': 'club', 'href': '/en/fc-barcelona/startseite/verein_1132.html'}
 
 
+def test_start_requests_expands_inline_club_players():
+    # A club item carries an inline squad; the players spider must fan out one
+    # profile request per inline player (TM-style clubs | players pipe).
+    spider = PlayersSpider()
+    club = {
+        'type': 'club',
+        'href': '/en/fc-barcelona/startseite/verein_1132.html',
+        'players': [
+            {'href': '/en/gemma-font/profil/spieler_38461.html'},
+            {'href': '/en/alexia-putellas/profil/spieler_4824.html'},
+        ],
+    }
+    spider.entrypoints = [club]
+    reqs = list(spider.start_requests())
+    assert len(reqs) == 2
+    urls = [r.url for r in reqs]
+    assert any('spieler_38461' in u for u in urls)
+    assert any('spieler_4824' in u for u in urls)
+    # Each emitted player's parent is the club (matches TM).
+    assert all(r.cb_kwargs['parent'] == club for r in reqs)
+
+
+def test_start_requests_handles_direct_player_item():
+    # A bare player entrypoint (players_from_file / flattened list) still yields
+    # a single request to its own href.
+    spider = PlayersSpider()
+    player = {'type': 'player', 'href': '/en/gemma-font/profil/spieler_38461.html'}
+    spider.entrypoints = [player]
+    reqs = list(spider.start_requests())
+    assert len(reqs) == 1
+    assert 'spieler_38461' in reqs[0].url
+
+
 def test_gemma_font_profile_fields():
     spider = PlayersSpider()
     resp = load_sample('player', 'spieler_38461.html')

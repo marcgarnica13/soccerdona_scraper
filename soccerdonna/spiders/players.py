@@ -1,5 +1,7 @@
 import re
 
+from scrapy import Request
+
 from soccerdonna.spiders.common_comp_club import BaseSpider
 from soccerdonna.utils import extract_entity_id, parse_market_value, parse_date_de
 
@@ -23,6 +25,32 @@ class PlayersSpider(BaseSpider):
             'type': 'player',
             'href': '/en/gemma-font/profil/spieler_38461.html',
         }]
+
+    def start_requests(self):
+        """Build profile requests, expanding inline club squads (TM-style).
+
+        Mirrors transfermarkt-scraper's `clubs | players` pipe: a `clubs` item
+        carries an inline `players[]` squad, so we fan out one profile request
+        per inline player and set the emitted player's `parent` to the club
+        (matching TM, where `player.parent == club`). Any other entrypoint
+        (a bare player item, as produced by `players_from_file` or a flattened
+        list) is fetched directly by its own href. Purely additive: direct
+        player piping is unchanged.
+        """
+        for item in self.entrypoints:
+            players = item.get('players')
+            if item.get('type') == 'club' and isinstance(players, list):
+                for player in players:
+                    href = player.get('href')
+                    if not href:
+                        continue
+                    url = self.seasonize_entrypoin_href(
+                        {'type': 'player', 'href': href}
+                    )
+                    yield Request(url, cb_kwargs={'parent': item})
+            else:
+                url = self.seasonize_entrypoin_href(item)
+                yield Request(url, cb_kwargs={'parent': item})
 
     def parse(self, response, parent):
         """Player profile page -> one detailed player item."""

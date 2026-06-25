@@ -67,22 +67,21 @@ grep ESP1 /tmp/all_comps.json > samples/output/competitions.json
 # 3. Clubs (each with an inline players[] array)
 poetry run scrapy crawl clubs -a parents=samples/output/competitions.json > samples/output/clubs.json
 
-# 4. Players — input is the flattened inline players[] of a club item (see note)
-head -n 1 samples/output/clubs.json \
-  | python3 -c 'import json,sys; c=json.load(sys.stdin); [print(json.dumps({"type":"player","href":p["href"]})) for p in c["players"]]' \
-  | poetry run scrapy crawl players > samples/output/players.json
+# 4. Players — pipe club items straight in; the inline players[] is auto-expanded
+head -n 1 samples/output/clubs.json | poetry run scrapy crawl players > samples/output/players.json
 
 # 5. Appearances — input is player items (profile hrefs)
 head -n 1 samples/output/players.json | poetry run scrapy crawl appearances > samples/output/appearances.json
 ```
 
-> **Note on the players/appearances input.** The `players` and `appearances`
-> spiders consume **player items** (each with a player-profile `href`). The
-> `clubs` spider nests its players inside each club's `players[]` array, so to
-> pipe clubs → players you flatten that array into one player item per line
-> (the `python3 -c …` step above). Feeding a raw `club` item to `players`
-> would fetch the *club* page and mis-parse it. See `API_REFERENCE.md` for the
-> per-spider input contract.
+> **Note on the players/appearances input.** The `clubs | players` pipe works
+> drop-in, exactly like transfermarkt-scraper. The `clubs` spider nests its
+> squad inside each club's `players[]` array, and the `players` spider
+> **auto-expands** that array into one profile request per player (the emitted
+> player's `parent` is the club). You can also feed bare **player items** (each
+> with a player-profile `href`) directly — e.g. from `players_from_file` or a
+> flattened list. The `appearances` spider consumes player items.
+> See `API_REFERENCE.md` for the per-spider input contract.
 
 ### Bypass spiders
 

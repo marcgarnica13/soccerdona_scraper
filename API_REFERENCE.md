@@ -64,25 +64,23 @@ poetry run scrapy crawl clubs -a parents=competitions.json > clubs.json
 
 ## `players`
 
-* **Input:** **player items** — each a `{type, href}` whose `href` is a player
-  **profile** path (`/…/profil/spieler_{id}.html`).
-* **Output:** one detailed `player` item per input.
+* **Input:** accepts **two shapes** (drop-in like transfermarkt-scraper):
+  * a `club` item with an inline `players[]` array — the spider **auto-expands**
+    it into one profile request per player, setting each emitted player's
+    `parent` to the club; **or**
+  * a bare **player item** — a `{type, href}` whose `href` is a player
+    **profile** path (`/…/profil/spieler_{id}.html`).
+* **Output:** one detailed `player` item per player.
 
-> The `clubs` spider nests players inside each club's `players[]`. To go
-> clubs → players, **flatten** that array into one player item per line first:
+> The `clubs | players` pipe works drop-in — feed `club` items straight in and
+> the inline squad is expanded automatically:
 >
 > ```bash
-> cat clubs.json \
->   | python3 -c 'import json,sys
-> for line in sys.stdin:
->     c=json.loads(line)
->     for p in c["players"]:
->         print(json.dumps({"type":"player","href":p["href"]}))' \
->   | poetry run scrapy crawl players > players.json
+> head -n 1 clubs.json | poetry run scrapy crawl players > players.json
 > ```
 >
-> Feeding a raw `club` item to `players` would fetch the *club* page and
-> mis-parse it.
+> Bare player items (e.g. from `players_from_file` or a flattened list) are
+> still accepted and fetched directly.
 
 ---
 
