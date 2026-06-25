@@ -66,6 +66,22 @@ class GamesUrlsSpider(BaseSpider):
         """
         return MATCHDAY_HREF_RE.findall(response.text)
 
+    def _game_links(self, response):
+        """All (fixture, game_href) pairs on this matchday-overview page.
+
+        Each fixture is a ``table.tabelle_grafik``; the match-report link lives
+        in the sibling ``<p class="drunter">`` that immediately follows it. This
+        is the real discovery shape (the site has no ``a[href*="spielbericht_"]``
+        in the fixture tables themselves), shared by ``games_urls`` and the
+        ``games`` spider so both walk the exact same set of fixtures.
+        """
+        for p in response.css('p.drunter'):
+            game_href = p.css('a[href*="spielbericht_"]::attr(href)').get()
+            if not game_href:
+                continue
+            fixture = p.xpath('preceding-sibling::table[1]')
+            yield fixture, _to_en(game_href)
+
     def parse_matchday(self, response, parent):
         """Matchday-overview page -> one game item per fixture + walk the nav."""
         # Mark this matchday seen (dedupe the nav-graph walk).
@@ -73,18 +89,16 @@ class GamesUrlsSpider(BaseSpider):
         if m:
             self.seen_matchdays.add(m.group(1))
 
-        # Each fixture is a `table.tabelle_grafik`; the match-report link lives
-        # in the sibling `<p class="drunter">` that immediately follows it.
-        for p in response.css('p.drunter'):
-            game_href = p.css('a[href*="spielbericht_"]::attr(href)').get()
-            if not game_href:
-                continue
-            fixture = p.xpath('preceding-sibling::table[1]')
+        for fixture, game_href in self._game_links(response):
             game = self.extract_game(fixture, game_href, parent)
             if game:
                 yield game
 
         # Follow other matchday-overview links not yet visited (reaches all).
+        yield from self._follow_matchdays(response, parent)
+
+    def _follow_matchdays(self, response, parent):
+        """Yield requests for matchday-overview pages not yet visited."""
         for href in self._matchday_links(response):
             href = _to_en(href)
             mm = MATCHDAY_NUM_RE.search(href)
