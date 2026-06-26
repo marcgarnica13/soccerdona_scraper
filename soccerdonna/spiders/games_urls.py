@@ -24,10 +24,22 @@ class GamesUrlsSpider(BaseSpider):
     teams, result) without opening each match report. ``parse`` finds the
     current matchday overview linked from the competition startseite and walks
     the matchday navigation graph; ``parse_matchday`` yields one game item per
-    fixture and follows not-yet-seen matchday pages.
+    fixture and follows neighbour matchday pages until the season boundary.
+
+    The walk is bounded by *fixture-gated expansion with a consecutive-empty
+    tolerance*: a matchday page that has fixtures resets the empty counter and
+    expands to its prev/next neighbours; an empty page still expands, but a
+    per-branch counter stops the branch after ``MAX_EMPTY_STREAK`` empty pages
+    in a row. This crosses a lone postponed/empty mid-season matchday yet dies a
+    couple of pages past the real season boundary, instead of following the
+    site's never-ending "next matchday" link forever.
     """
 
     name = 'games_urls'
+
+    # Stop a branch of the walk after this many consecutive empty matchday pages
+    # (the season boundary, or a site-shape change).
+    MAX_EMPTY_STREAK = 2
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -82,30 +94,49 @@ class GamesUrlsSpider(BaseSpider):
             fixture = p.xpath('preceding-sibling::table[1]')
             yield fixture, _to_en(game_href)
 
-    def parse_matchday(self, response, parent):
-        """Matchday-overview page -> one game item per fixture + walk the nav."""
+    def parse_matchday(self, response, parent, empty_streak=0):
+        """Matchday-overview page -> one game item per fixture + walk the nav.
+
+        ``empty_streak`` is the number of consecutive empty matchday pages
+        reached on this branch of the walk so far; it gates how far the walk
+        keeps expanding past the last real matchday (see ``MAX_EMPTY_STREAK``).
+        """
         # Mark this matchday seen (dedupe the nav-graph walk).
         m = MATCHDAY_NUM_RE.search(response.url)
         if m:
             self.seen_matchdays.add(m.group(1))
 
-        for fixture, game_href in self._game_links(response):
+        games = list(self._game_links(response))
+        for fixture, game_href in games:
             game = self.extract_game(fixture, game_href, parent)
             if game:
                 yield game
 
-        # Follow other matchday-overview links not yet visited (reaches all).
-        yield from self._follow_matchdays(response, parent)
+        # Reset the empty-streak on any matchday that has fixtures; otherwise
+        # extend it. Stop expanding once K empty pages stack up on this branch —
+        # that is the season boundary (or a site-shape change).
+        streak = 0 if games else empty_streak + 1
+        if streak < self.MAX_EMPTY_STREAK:
+            yield from self._follow_matchdays(response, parent, streak)
+        elif not games:
+            self.logger.debug(
+                'games_urls: stopping walk after %d empty matchdays at %s',
+                streak, response.url)
 
-    def _follow_matchdays(self, response, parent):
-        """Yield requests for matchday-overview pages not yet visited."""
+    def _follow_matchdays(self, response, parent, empty_streak=0):
+        """Yield requests for matchday-overview pages not yet visited.
+
+        ``empty_streak`` is threaded to each child via ``cb_kwargs`` so every
+        branch of the walk carries its own consecutive-empty counter.
+        """
         for href in self._matchday_links(response):
             href = _to_en(href)
             mm = MATCHDAY_NUM_RE.search(href)
             if mm and mm.group(1) not in self.seen_matchdays:
                 self.seen_matchdays.add(mm.group(1))  # pre-mark, avoid dup reqs
-                yield response.follow(href, self.parse_matchday,
-                                      cb_kwargs={'parent': parent})
+                yield response.follow(
+                    href, self.parse_matchday,
+                    cb_kwargs={'parent': parent, 'empty_streak': empty_streak})
 
     def extract_game(self, fixture, game_href, parent):
         game_href = _to_en(game_href)
