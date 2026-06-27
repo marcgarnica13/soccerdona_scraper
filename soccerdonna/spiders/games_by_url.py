@@ -19,5 +19,10 @@ class GamesByUrlSpider(GamesSpider):
             # Route to the index/ report page if a different sub-page (e.g. the
             # aufstellung lineup page) was supplied.
             href = href.replace('/aufstellung/', '/index/')
+            # The competition is the entrypoint game's parent (games_to_scrape
+            # items come from games_urls, whose parent is the competition). Pass
+            # the competition through so parse_game records parent=competition
+            # and competition_code survives to games.json (matches GamesSpider).
+            parent = item.get('parent') or item
             yield Request(self.base_url + href, callback=self.parse_game,
-                          cb_kwargs={'parent': item})
+                          cb_kwargs={'parent': parent})
