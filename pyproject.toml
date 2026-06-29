@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "soccerdonna-scraper"
-version = "0.1.0"
+version = "0.1.1"
 description = "Collects women's football data from the soccerdonna.de website"
 authors = ["Gemini Sports"]
 packages = [{include = "soccerdonna"}]
