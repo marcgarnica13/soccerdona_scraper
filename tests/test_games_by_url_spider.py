@@ -1,3 +1,5 @@
+import json
+
 from tests.conftest import load_sample
 from soccerdonna.spiders.games_by_url import GamesByUrlSpider
 
@@ -37,6 +39,24 @@ def test_falls_back_to_item_when_no_parent():
     spider.entrypoints = [item]
     req = list(spider.start_requests())[0]
     assert req.cb_kwargs['parent'] == item
+
+
+def test_competition_survives_init_load(tmp_path):
+    """Regression: the competition must survive loading via __init__ (a parents
+    file), not just when entrypoints are injected post-init. BaseSpider strips
+    second-level parents by default; games_by_url opts out via keep_parent so the
+    entrypoint game's parent (the competition) reaches start_requests."""
+    competition = {'type': 'competition', 'competition_code': 'ESP1',
+                   'href': '/en/x/startseite/wettbewerb_ESP1.html'}
+    entrypoint = {'type': 'game',
+                  'href': '/en/x/index/spielbericht_153373.html',
+                  'parent': competition}
+    parents_file = tmp_path / 'games_to_scrape.jsonl'
+    parents_file.write_text(json.dumps(entrypoint) + '\n')
+
+    spider = GamesByUrlSpider(parents=str(parents_file))
+    req = list(spider.start_requests())[0]
+    assert req.cb_kwargs['parent']['competition_code'] == 'ESP1'
 
 
 def test_parse_game_records_competition_code():

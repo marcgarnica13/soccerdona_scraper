@@ -17,6 +17,12 @@ def read_lines(file_name: str, reading_fn: typing.Callable[[str], BufferedReader
 
 
 class BaseSpider(scrapy.Spider):
+    # Subclasses set this True when an entrypoint's own ``parent`` is meaningful
+    # and must survive loading. The default (False) strips second-level parents
+    # as redundant. ``games_by_url`` needs it: its entrypoint is a game whose
+    # ``parent`` is the competition that must reach the emitted game record.
+    keep_parent = False
+
     def __init__(self, base_url=None, parents=None):
         if base_url is not None:
             self.base_url = base_url
@@ -47,10 +53,13 @@ class BaseSpider(scrapy.Spider):
         else:
             parents = self.scrape_parents()
 
-        # Second-level parents are redundant.
-        for parent in parents:
-            if parent.get('parent') is not None:
-                del parent['parent']
+        # Second-level parents are redundant for most spiders (the entrypoint
+        # item itself is recorded as the parent of emitted children). Spiders
+        # that record the entrypoint's parent set ``keep_parent`` to opt out.
+        if not self.keep_parent:
+            for parent in parents:
+                if parent.get('parent') is not None:
+                    del parent['parent']
 
         self.entrypoints = parents
 

@@ -13,6 +13,10 @@ class GamesByUrlSpider(GamesSpider):
 
     name = 'games_by_url'
 
+    # Keep each entrypoint game's parent (the competition) through loading so it
+    # survives to the emitted game record (see start_requests / parse_game).
+    keep_parent = True
+
     def start_requests(self):
         for item in self.entrypoints:
             href = item['href']
