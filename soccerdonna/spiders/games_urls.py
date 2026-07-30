@@ -1,4 +1,5 @@
 import re
+from collections import defaultdict
 
 from soccerdonna.spiders.common_comp_club import BaseSpider
 from soccerdonna.utils import extract_entity_id, parse_date_de
@@ -13,8 +14,21 @@ def _to_en(href):
 # /en/<slug>/spieltagsuebersicht/wettbewerb_ESP1_2025_30.html
 MATCHDAY_HREF_RE = re.compile(
     r'/[a-z]{2}/[^"\']*spieltagsuebersicht/wettbewerb_[A-Za-z0-9]+_\d+_\d+\.html')
-MATCHDAY_NUM_RE = re.compile(
-    r'spieltagsuebersicht/wettbewerb_[A-Za-z0-9]+_\d+_(\d+)\.html')
+# (competition_code, season, matchday) — the FULL scope of a matchday-overview
+# URL. The predecessor of this regex captured only the third group (the bare
+# matchday number), which made the visited-set global across every competition
+# in a run: N competitions racing at CONCURRENT_REQUESTS all stamp their current
+# matchday number into one set, so every competition finds its own prev/next
+# neighbour already "seen" by an unrelated league and its walk dies after a page
+# or two. See tests/test_games_urls_spider.py::test_two_competitions_walk_independently.
+MATCHDAY_KEY_RE = re.compile(
+    r'spieltagsuebersicht/wettbewerb_([A-Za-z0-9]+)_(\d+)_(\d+)\.html')
+
+
+def matchday_key(url):
+    """``(competition_code, season, matchday)`` for a matchday URL, else ``None``."""
+    match = MATCHDAY_KEY_RE.search(url or '')
+    return match.groups() if match else None
 
 
 class GamesUrlsSpider(BaseSpider):
@@ -33,6 +47,22 @@ class GamesUrlsSpider(BaseSpider):
     in a row. This crosses a lone postponed/empty mid-season matchday yet dies a
     couple of pages past the real season boundary, instead of following the
     site's never-ending "next matchday" link forever.
+
+    Each competition walks its own lane. The visited-set is keyed on the full
+    ``(competition_code, season, matchday)`` scope — never the bare matchday
+    number, which every competition shares — and ``_follow_matchdays`` refuses
+    to leave the lane of the page it stands on. Both halves are required:
+    ``_matchday_links`` regex-scans raw response text (the prev/next nav is an
+    onclick handler, not an anchor), so it surfaces hrefs for *other*
+    competitions and seasons; following those would misattribute their games to
+    this page's ``parent`` and turn a bounded per-competition walk into an open
+    crawl of the site.
+
+    Boundedness: total requests
+    ``<= C + sum_c min(reachable_matchdays(c) + 2*MAX_EMPTY_STREAK, MAX_MATCHDAYS_PER_SCOPE)``
+    ``<= C * (1 + MAX_MATCHDAYS_PER_SCOPE)`` for ``C`` competitions. Every term
+    is capped by a spider constant, so the crawl is O(competitions) with a
+    constant factor and no term depends on site-supplied data.
     """
 
     name = 'games_urls'
@@ -41,9 +71,30 @@ class GamesUrlsSpider(BaseSpider):
     # (the season boundary, or a site-shape change).
     MAX_EMPTY_STREAK = 2
 
+    # Hard ceiling on distinct matchday pages visited per (competition, season).
+    # Belt-and-braces behind MAX_EMPTY_STREAK: even if the site began serving
+    # fixtures on every "next matchday" page forever, one competition can never
+    # cost more than this many requests. The longest real women's league season
+    # on soccerdonna is ~34 matchdays; 60 is ~2x headroom, and reaching it is
+    # logged as a WARNING (i.e. "the site shape changed, come look").
+    MAX_MATCHDAYS_PER_SCOPE = 60
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        # (competition_code, season, matchday) -> visited. Keyed on the FULL
+        # scope, never the bare matchday number: every competition has a
+        # matchday "12" and they must not shadow each other.
         self.seen_matchdays = set()
+        # (competition_code, season) -> pages claimed, for the per-scope cap.
+        self._scope_visits = defaultdict(int)
+
+    def _claim(self, key):
+        """Claim one scope key. Returns True if it was not already claimed."""
+        if key in self.seen_matchdays:
+            return False
+        self.seen_matchdays.add(key)
+        self._scope_visits[key[:2]] += 1
+        return True
 
     def scrape_parents(self):
         # Allow direct instantiation (tests / `scrapy check`) without a parents
@@ -58,13 +109,27 @@ class GamesUrlsSpider(BaseSpider):
             }]
 
     def parse(self, response, parent):
-        """Competition page -> follow the current matchday-overview page."""
-        md_href = response.css(
-            'a[href*="spieltagsuebersicht/wettbewerb_"]::attr(href)').get()
-        if not md_href:
+        """Competition page -> follow this competition's current matchday page.
+
+        The competition startseite also carries an "other competitions of this
+        country" panel, so a blind "first matchday link on the page" would hand
+        the whole walk to a sibling league the moment the site renders one
+        there. Prefer the link whose competition code matches the parent's own.
+
+        Cup and international competitions render a knockout bracket rather
+        than a matchday overview and carry no ``spieltagsuebersicht`` link at
+        all, so they legitimately yield no games here.
+        """
+        hrefs = response.css(
+            'a[href*="spieltagsuebersicht/wettbewerb_"]::attr(href)').getall()
+        if not hrefs:
             return
-        md_href = _to_en(md_href)
-        yield response.follow(md_href, self.parse_matchday,
+        code = parent.get('competition_code')
+        md_href = next(
+            (h for h in hrefs
+             if code and (key := matchday_key(h)) and key[0] == code),
+            hrefs[0])
+        yield response.follow(_to_en(md_href), self.parse_matchday,
                               cb_kwargs={'parent': parent})
 
     def _matchday_links(self, response):
@@ -101,10 +166,11 @@ class GamesUrlsSpider(BaseSpider):
         reached on this branch of the walk so far; it gates how far the walk
         keeps expanding past the last real matchday (see ``MAX_EMPTY_STREAK``).
         """
-        # Mark this matchday seen (dedupe the nav-graph walk).
-        m = MATCHDAY_NUM_RE.search(response.url)
-        if m:
-            self.seen_matchdays.add(m.group(1))
+        # Mark this matchday seen (dedupe the nav-graph walk), scoped to its own
+        # competition + season.
+        key = matchday_key(response.url)
+        if key:
+            self._claim(key)
 
         games = list(self._game_links(response))
         for fixture, game_href in games:
@@ -124,19 +190,38 @@ class GamesUrlsSpider(BaseSpider):
                 streak, response.url)
 
     def _follow_matchdays(self, response, parent, empty_streak=0):
-        """Yield requests for matchday-overview pages not yet visited.
+        """Yield requests for unvisited matchday pages of THIS competition+season.
+
+        ``_matchday_links`` regex-scans the raw response text, so it can surface
+        hrefs belonging to other competitions or seasons. Following those would
+        (a) attribute their games to this page's ``parent`` and (b) turn a
+        bounded per-competition walk into an open-ended crawl of the site, so
+        the walk is pinned to the ``(competition_code, season)`` lane of the
+        page it stands on.
 
         ``empty_streak`` is threaded to each child via ``cb_kwargs`` so every
         branch of the walk carries its own consecutive-empty counter.
         """
+        scope = matchday_key(response.url)
+        if not scope:
+            return
+        lane = scope[:2]
+        if self._scope_visits[lane] >= self.MAX_MATCHDAYS_PER_SCOPE:
+            self.logger.warning(
+                'games_urls: per-competition matchday cap (%d) hit for %s season '
+                '%s at %s - walk truncated, check for a site-shape change',
+                self.MAX_MATCHDAYS_PER_SCOPE, lane[0], lane[1], response.url)
+            return
         for href in self._matchday_links(response):
             href = _to_en(href)
-            mm = MATCHDAY_NUM_RE.search(href)
-            if mm and mm.group(1) not in self.seen_matchdays:
-                self.seen_matchdays.add(mm.group(1))  # pre-mark, avoid dup reqs
-                yield response.follow(
-                    href, self.parse_matchday,
-                    cb_kwargs={'parent': parent, 'empty_streak': empty_streak})
+            key = matchday_key(href)
+            if not key or key[:2] != lane:
+                continue           # different competition/season - not our lane
+            if not self._claim(key):
+                continue           # already visited/queued - avoid dup requests
+            yield response.follow(
+                href, self.parse_matchday,
+                cb_kwargs={'parent': parent, 'empty_streak': empty_streak})
 
     def extract_game(self, fixture, game_href, parent):
         game_href = _to_en(game_href)

@@ -1,9 +1,10 @@
 # tests/test_games_urls_spider.py
+import pytest
 import scrapy
 from scrapy.http import HtmlResponse
 
 from tests.conftest import load_sample, iter_samples
-from soccerdonna.spiders.games_urls import GamesUrlsSpider
+from soccerdonna.spiders.games_urls import GamesUrlsSpider, matchday_key
 
 PARENT = {'type': 'competition', 'competition_code': 'ESP1',
           'href': '/en/primera-division-femenina/startseite/wettbewerb_ESP1.html'}
@@ -121,3 +122,191 @@ def test_followed_request_carries_incremented_streak():
                  if isinstance(o, scrapy.Request)]
     assert real_reqs
     assert all(r.cb_kwargs['empty_streak'] == 0 for r in real_reqs)
+
+
+# --- per-competition scope regression tests --------------------------------
+#
+# The bug these pin: the visited-set used to be keyed on the bare matchday
+# NUMBER, spider-wide. One spider instance serves every competition in a run
+# (crawl_games_urls issues a single runner.crawl for the whole parents file) and
+# Scrapy parses them concurrently, so competition B's matchday 12 was shadowed
+# by competition A's matchday 12 and B's walk died after one page. Prod:
+# 81 games / 15 comps at N=125, versus 240 games / full season at N=1.
+
+def _md_url_for(code, season, matchday, slug='x'):
+    return (f'{BASE}/en/{slug}/spieltagsuebersicht/'
+            f'wettbewerb_{code}_{season}_{matchday}.html')
+
+
+def _nav_html(*hrefs, fixture=True):
+    """A matchday page linking ``hrefs`` via onclick nav, with/without a fixture.
+
+    The fixture shape mirrors the real site: the match-report link lives in a
+    ``p.drunter`` immediately following the fixture ``table.tabelle_grafik``.
+    """
+    buttons = ''.join(
+        f'<button onclick="location.href=\'{h}\'">go</button>' for h in hrefs)
+    fixture_html = ''
+    if fixture:
+        fixture_html = (
+            '<table class="tabelle_grafik">'
+            '<tr><td><a href="/en/a/startseite/verein_1.html">H</a></td>'
+            '<td class="ac fb">1:0</td>'
+            '<td><a href="/en/b/startseite/verein_2.html">A</a></td></tr>'
+            '<tr><td>Kick-off: 18:00 - 01.03.2026</td></tr>'
+            '</table>'
+            '<p class="drunter">'
+            '<a href="/en/x/index/spielbericht_999.html">report</a></p>')
+    return f'<html><body><div id="nav">{buttons}</div>{fixture_html}</body></html>'
+
+
+def test_same_matchday_number_across_competitions_not_shadowed():
+    """Two competitions sharing a matchday NUMBER must both keep walking.
+
+    Minimal regression for the shared-visited-set bug: under the old bare-number
+    key, ESP1 matchday 12 claimed "12" globally and NWSL's own matchday 12 then
+    found every neighbour already seen, emitting zero follows.
+    """
+    spider = GamesUrlsSpider()
+
+    esp_out = list(spider.parse_matchday(
+        resp(_nav_html(_md_url_for('ESP1', 2025, 11),
+                       _md_url_for('ESP1', 2025, 13)),
+             _md_url_for('ESP1', 2025, 12)),
+        parent={'competition_code': 'ESP1'}))
+    nwsl_out = list(spider.parse_matchday(
+        resp(_nav_html(_md_url_for('NWSL', 2026, 11),
+                       _md_url_for('NWSL', 2026, 13)),
+             _md_url_for('NWSL', 2026, 12)),
+        parent={'competition_code': 'NWSL'}))
+
+    assert [o for o in esp_out if isinstance(o, scrapy.Request)]
+    assert [o for o in nwsl_out if isinstance(o, scrapy.Request)], (
+        'NWSL matchday 12 was shadowed by ESP1 matchday 12')
+
+
+def _drive(spider, seeds, page_for):
+    """Breadth-first drive the spider to fixpoint over a fake site.
+
+    ``seeds`` are (url, parent) pairs; ``page_for(url)`` returns the page HTML.
+    Returns the list of URLs requested (in order), i.e. the request count.
+    """
+    queue = [(url, parent, 0) for url, parent in seeds]
+    visited = []
+    while queue:
+        url, parent, streak = queue.pop(0)
+        visited.append(url)
+        for out in spider.parse_matchday(
+                resp(page_for(url), url), parent=parent, empty_streak=streak):
+            if isinstance(out, scrapy.Request):
+                queue.append((out.url, out.cb_kwargs['parent'],
+                              out.cb_kwargs['empty_streak']))
+    return visited
+
+
+def _fake_site(matchdays):
+    """Page factory: matchdays 1..M have a fixture, anything beyond is empty.
+
+    Every page links its prev/next neighbour, so beyond matchday M the site
+    keeps offering "next matchday" forever — only MAX_EMPTY_STREAK stops it.
+    """
+    def page_for(url):
+        code, season, matchday = matchday_key(url)
+        neighbours = [_md_url_for(code, season, n)
+                      for n in (int(matchday) - 1, int(matchday) + 1) if n >= 1]
+        return _nav_html(*neighbours, fixture=1 <= int(matchday) <= matchdays)
+    return page_for
+
+
+def test_two_competitions_walk_independently():
+    """N=2 competitions each visit all their own matchdays; lanes don't mix."""
+    matchdays = 8
+    spider = GamesUrlsSpider()
+    seeds = [(_md_url_for('ESP1', 2025, 1), {'competition_code': 'ESP1'}),
+             (_md_url_for('NWSL', 2026, 1), {'competition_code': 'NWSL'})]
+    visited = _drive(spider, seeds, _fake_site(matchdays))
+
+    esp = {matchday_key(u)[2] for u in visited if matchday_key(u)[0] == 'ESP1'}
+    nwsl = {matchday_key(u)[2] for u in visited if matchday_key(u)[0] == 'NWSL'}
+    # Every real matchday of each competition is reached, independently.
+    assert {str(n) for n in range(1, matchdays + 1)} <= esp
+    assert {str(n) for n in range(1, matchdays + 1)} <= nwsl
+    # And the visited set partitions cleanly by competition code.
+    assert {matchday_key(u)[0] for u in visited} == {'ESP1', 'NWSL'}
+
+
+def test_walk_stays_in_own_competition_lane():
+    """A foreign competition's matchday href on the page is never followed.
+
+    Guards against trading the scoping bug for an unboundedness bug: the key is
+    now the full tuple, so a foreign href looks "unseen" and would be followed
+    if the lane guard were missing — misattributing its games to this parent and
+    opening an unbounded crawl of the site.
+    """
+    spider = GamesUrlsSpider()
+    out = list(spider.parse_matchday(
+        resp(_nav_html(_md_url_for('ESP1', 2025, 29),
+                       _md_url_for('BL1', 2025, 9)),
+             _md_url_for('ESP1', 2025, 30)),
+        parent={'competition_code': 'ESP1'}))
+    urls = [o.url for o in out if isinstance(o, scrapy.Request)]
+    assert urls, 'should still follow its own neighbour'
+    assert not any('BL1' in u for u in urls)
+
+
+def test_walk_stays_in_own_season_lane():
+    """A previous-season matchday href is never followed on a current-season run."""
+    spider = GamesUrlsSpider()
+    out = list(spider.parse_matchday(
+        resp(_nav_html(_md_url_for('ESP1', 2025, 29),
+                       _md_url_for('ESP1', 2024, 30)),
+             _md_url_for('ESP1', 2025, 30)),
+        parent={'competition_code': 'ESP1'}))
+    urls = [o.url for o in out if isinstance(o, scrapy.Request)]
+    assert urls
+    assert not any('_2024_' in u for u in urls)
+
+
+def test_matchday_cap_bounds_a_pathological_competition():
+    """A site that never runs out of fixtures is still bounded by the cap.
+
+    MAX_EMPTY_STREAK can never fire here (every page has a fixture), so the
+    per-scope cap is the only thing standing between this and an infinite walk —
+    the failure mode that burned a 224-min prod backfill.
+    """
+    spider = GamesUrlsSpider()
+
+    def endless(url):
+        code, season, matchday = matchday_key(url)
+        return _nav_html(_md_url_for(code, season, int(matchday) + 1),
+                         fixture=True)
+
+    visited = _drive(spider, [(_md_url_for('ESP1', 2025, 1),
+                               {'competition_code': 'ESP1'})], endless)
+    assert len(visited) <= GamesUrlsSpider.MAX_MATCHDAYS_PER_SCOPE + 1
+
+
+
+
+
+@pytest.mark.parametrize('competitions', [1, 2, 5])
+def test_request_count_proportional_to_competitions_times_matchdays(competitions):
+    """Total requests scale as O(competitions x matchdays) — the boundedness proof.
+
+    PROJECT_RULES requires an external spider be proven bounded before it is
+    wired into a DAG. The fake site has M real matchdays per competition and
+    then empty pages forever, so a correct walk costs M pages plus at most
+    MAX_EMPTY_STREAK overshoot on each of the two branches.
+    """
+    matchdays = 10
+    codes = [f'C{i}' for i in range(competitions)]
+    spider = GamesUrlsSpider()
+    seeds = [(_md_url_for(code, 2025, 1), {'competition_code': code})
+             for code in codes]
+    visited = _drive(spider, seeds, _fake_site(matchdays))
+
+    lower = competitions * matchdays
+    upper = competitions * (matchdays + 2 * GamesUrlsSpider.MAX_EMPTY_STREAK)
+    assert lower <= len(visited) <= upper
+    # Per-competition cost is constant, i.e. strictly proportional to N.
+    assert len(visited) % competitions == 0

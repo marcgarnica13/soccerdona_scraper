@@ -20,6 +20,15 @@ def _url_for(category, filename):
         return f'{BASE}/en/x/profil/{stem}.html'
     if category == 'appearance':
         return f'{BASE}/en/x/leistungsdaten/{stem}.html'
+    if category == 'matchday':
+        # Sample filenames are '<CODE>_<season>_<matchday>.html'; reconstruct the
+        # real matchday-overview URL so GamesUrlsSpider's scope-key logic (which
+        # reads response.url) is actually exercised. Without this the URL would
+        # fall through to the generic form below, match no matchday regex, and
+        # the visited-set / lane-guard paths would be dead in every test.
+        code, season, matchday = stem.split('_')
+        return (f'{BASE}/en/x/spieltagsuebersicht/'
+                f'wettbewerb_{code}_{season}_{matchday}.html')
     return f'{BASE}/en/{stem}.html'
 
 
