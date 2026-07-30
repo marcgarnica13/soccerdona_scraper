@@ -310,3 +310,48 @@ def test_request_count_proportional_to_competitions_times_matchdays(competitions
     assert lower <= len(visited) <= upper
     # Per-competition cost is constant, i.e. strictly proportional to N.
     assert len(visited) % competitions == 0
+
+
+# --- real-upstream-artifact test -------------------------------------------
+
+def test_real_samples_two_competitions_do_not_shadow():
+    """Two REAL competitions at overlapping matchday numbers stay independent.
+
+    PROJECT_RULES requires at least one test driven by a verbatim upstream
+    artifact rather than hand-built mocks, because a mock encodes the consumer's
+    own assumptions. Every sample here is a live soccerdonna page captured on
+    2026-07-30: NWSL and IRL1 were both mid-season at matchdays 11-14, which is
+    exactly the overlap that collapsed the walk in production.
+
+    Sequence: walk NWSL's real matchdays 12/13/14 (which under the old bare-number
+    key claimed "12", "13", "14" globally, plus pre-marked neighbours "11"/"15"),
+    then hand the spider IRL1's real matchday 12. Its neighbours are IRL1 11 and
+    13 - both already claimed by NWSL - so the old key emitted zero follows and
+    IRL1's season ended after one page. Live confirmation on the same 5-competition
+    seed: old spider 79 games over 4 competitions (one league taking 65 of them),
+    patched spider 406 games over 5, each with a full-season window.
+    """
+    spider = GamesUrlsSpider()
+
+    nwsl_parent = {'type': 'competition', 'competition_code': 'NWSL'}
+    for matchday in (12, 13, 14):
+        out = list(spider.parse_matchday(
+            load_sample('matchday', f'NWSL_2025_{matchday}.html'),
+            parent=nwsl_parent))
+        games = [o for o in out if isinstance(o, dict)]
+        assert games, f'real NWSL matchday {matchday} sample yielded no games'
+        assert all(g['parent'] is nwsl_parent for g in games)
+
+    irl_parent = {'type': 'competition', 'competition_code': 'IRL1'}
+    out = list(spider.parse_matchday(
+        load_sample('matchday', 'IRL1_2025_12.html'), parent=irl_parent))
+
+    games = [o for o in out if isinstance(o, dict)]
+    follows = [o for o in out if isinstance(o, scrapy.Request)]
+    assert games, 'real IRL1 sample yielded no games'
+    assert all(g['parent'] is irl_parent for g in games)
+    assert follows, (
+        'IRL1 matchday 12 was shadowed by NWSL matchdays 12-14 - the walk died '
+        'after one page, which is the production bug')
+    # Every follow stays in IRL1's own lane.
+    assert all(matchday_key(r.url)[0] == 'IRL1' for r in follows)
