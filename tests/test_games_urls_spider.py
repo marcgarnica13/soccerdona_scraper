@@ -4,7 +4,7 @@ import scrapy
 from scrapy.http import HtmlResponse
 
 from tests.conftest import load_sample, iter_samples
-from soccerdonna.spiders.games_urls import GamesUrlsSpider, matchday_key
+from soccerdonna.spiders.games_urls import GamesUrlsSpider, matchday_key, matchday_options
 
 PARENT = {'type': 'competition', 'competition_code': 'ESP1',
           'href': '/en/primera-division-femenina/startseite/wettbewerb_ESP1.html'}
@@ -109,7 +109,13 @@ def test_empty_at_tolerance_stops():
 
 
 def test_followed_request_carries_incremented_streak():
-    """Empty pages increment the per-branch counter; real pages reset it."""
+    """On the FALLBACK path, empty pages increment the counter and real pages reset it.
+
+    The streak only governs the no-picker fallback now, so both halves use
+    picker-less pages; a page with a ``spieltag`` picker enumerates instead and
+    its requests carry no ``empty_streak`` at all (see
+    ``test_enumerated_requests_do_not_carry_streak``).
+    """
     spider = GamesUrlsSpider()
 
     empty_reqs = [o for o in spider.parse_matchday(
@@ -118,8 +124,11 @@ def test_followed_request_carries_incremented_streak():
     assert empty_reqs
     assert all(r.cb_kwargs['empty_streak'] == 1 for r in empty_reqs)
 
-    real_reqs = [o for o in spider.parse_matchday(_matchday_sample(), parent=PARENT)
-                 if isinstance(o, scrapy.Request)]
+    real_no_picker = _nav_html(_md_url_for('ESP1', 2025, 29, slug='primera-division-femenina'),
+                               fixture=True)
+    real_reqs = [o for o in spider.parse_matchday(
+        resp(real_no_picker, _md_url(30)), parent=PARENT)
+        if isinstance(o, scrapy.Request)]
     assert real_reqs
     assert all(r.cb_kwargs['empty_streak'] == 0 for r in real_reqs)
 
@@ -200,7 +209,7 @@ def _drive(spider, seeds, page_for):
                 resp(page_for(url), url), parent=parent, empty_streak=streak):
             if isinstance(out, scrapy.Request):
                 queue.append((out.url, out.cb_kwargs['parent'],
-                              out.cb_kwargs['empty_streak']))
+                              out.cb_kwargs.get('empty_streak', 0)))
     return visited
 
 
@@ -355,3 +364,83 @@ def test_real_samples_two_competitions_do_not_shadow():
         'after one page, which is the production bug')
     # Every follow stays in IRL1's own lane.
     assert all(matchday_key(r.url)[0] == 'IRL1' for r in follows)
+
+
+# --- matchday-picker enumeration ------------------------------------------
+#
+# The neighbour walk had to guess where a season ended, and MAX_EMPTY_STREAK made
+# that guess by stopping after two consecutive empty matchdays — which a
+# mid-season break is indistinguishable from. Production 2026-07-30: DV1S got 8
+# games over 8 days while sibling divisions DV1M/DV1N, same calendar and same
+# matchday numbering, got 84 and 87 across three months. Every real matchday page
+# carries a `spieltag` picker listing the whole season (verified: ESP1 1..30,
+# NWSL 1..26, IRL1 1..22, contiguous), so enumeration removes the guess.
+
+def _picker_html(numbers, *, fixture=True, nav_hrefs=()):
+    """A matchday page carrying a real-shaped ``spieltag`` picker."""
+    opts = ''.join(f'<option value="{n}">{n}. Match day</option>' for n in numbers)
+    select = f'<select name="spieltag">{opts}</select>'
+    return _nav_html(*nav_hrefs, fixture=fixture).replace('</body>', select + '</body>')
+
+
+def test_matchday_options_parses_real_samples():
+    for name, expected in (('ESP1_2025_30.html', 30), ('NWSL_2025_13.html', 26),
+                           ('IRL1_2025_12.html', 22)):
+        nums = matchday_options(load_sample('matchday', name).text)
+        assert nums == list(range(1, expected + 1)), name
+
+
+def test_enumerates_full_season_from_real_sample():
+    """The real ESP1 matchday-30 page fans out to all 29 other matchdays."""
+    spider = GamesUrlsSpider()
+    out = list(spider.parse_matchday(_matchday_sample(), parent=PARENT))
+    reqs = [o for o in out if isinstance(o, scrapy.Request)]
+    got = sorted(int(matchday_key(r.url)[2]) for r in reqs)
+    assert got == [n for n in range(1, 31) if n != 30]
+    assert all(matchday_key(r.url)[:2] == ('ESP1', '2025') for r in reqs)
+
+
+def test_mid_season_break_does_not_truncate():
+    """The DV1S regression: a break longer than MAX_EMPTY_STREAK must not end the season.
+
+    Matchdays 5-9 have no fixtures — five consecutive empty pages, well past the
+    two-page tolerance. Under the neighbour walk the branch died there and
+    everything from 10 on was lost. Enumeration reaches all 20.
+    """
+    season = list(range(1, 21))
+    spider = GamesUrlsSpider()
+
+    def page_for(url):
+        md = int(matchday_key(url)[2])
+        return _picker_html(season, fixture=not (5 <= md <= 9))
+
+    visited = _drive(spider, [(_md_url_for('DV1S', 2025, 12), {'competition_code': 'DV1S'})],
+                     page_for)
+    assert sorted(int(matchday_key(u)[2]) for u in visited) == season
+
+
+def test_enumerated_requests_do_not_carry_streak():
+    spider = GamesUrlsSpider()
+    out = list(spider.parse_matchday(
+        resp(_picker_html([1, 2, 3]), _md_url_for('ESP1', 2025, 2)), parent=PARENT))
+    reqs = [o for o in out if isinstance(o, scrapy.Request)]
+    assert reqs and all('empty_streak' not in r.cb_kwargs for r in reqs)
+
+
+def test_falls_back_to_walk_when_no_picker():
+    """No picker (cup page, or a site-shape change) -> the bounded walk still runs."""
+    spider = GamesUrlsSpider()
+    out = list(spider.parse_matchday(
+        resp(_nav_html(_md_url_for('ESP1', 2025, 29)), _md_url_for('ESP1', 2025, 30)),
+        parent=PARENT))
+    reqs = [o for o in out if isinstance(o, scrapy.Request)]
+    assert reqs and all('empty_streak' in r.cb_kwargs for r in reqs)
+
+
+def test_enumeration_still_respects_the_per_scope_cap():
+    spider = GamesUrlsSpider()
+    huge = list(range(1, GamesUrlsSpider.MAX_MATCHDAYS_PER_SCOPE + 40))
+    out = list(spider.parse_matchday(
+        resp(_picker_html(huge), _md_url_for('ESP1', 2025, 1)), parent=PARENT))
+    reqs = [o for o in out if isinstance(o, scrapy.Request)]
+    assert len(reqs) <= GamesUrlsSpider.MAX_MATCHDAYS_PER_SCOPE
