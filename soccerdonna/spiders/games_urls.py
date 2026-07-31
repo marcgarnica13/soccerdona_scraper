@@ -82,9 +82,9 @@ class GamesUrlsSpider(BaseSpider):
     picker**, whose options are the complete list of matchday numbers for the
     season. That is exact and needs no guess about where the season ends.
 
-    The prev/next neighbour walk survives only as a fallback for pages with no
-    picker. It is bounded by *fixture-gated expansion with a consecutive-empty
-    tolerance*: a matchday page that has fixtures resets the empty counter and
+    The prev/next neighbour walk survives only as a fallback for pages that
+    carry no picker at all. It is bounded by *fixture-gated expansion with a
+    consecutive-empty tolerance*: a matchday page that has fixtures resets the empty counter and
     expands to its prev/next neighbours; an empty page still expands, but a
     per-branch counter stops the branch after ``MAX_EMPTY_STREAK`` empty pages
     in a row, instead of following the site's never-ending "next matchday" link
@@ -224,16 +224,21 @@ class GamesUrlsSpider(BaseSpider):
                 yield game
 
         # Preferred path: the page's own matchday picker enumerates the whole
-        # season, so fan out to every matchday directly. _claim dedupes, so only
-        # the first page of a competition actually emits requests.
-        enumerated = list(self._enumerate_matchdays(response, parent))
-        if enumerated:
-            yield from enumerated
+        # season, so fan out to every matchday directly. Branch on the picker
+        # being PRESENT, not on whether it yielded anything new — _claim dedupes,
+        # so after the first page of a competition every later page enumerates to
+        # nothing, and branching on the result would silently drop each of them
+        # into the neighbour walk (which then overruns the season boundary by up
+        # to MAX_EMPTY_STREAK pages).
+        options = matchday_options(response.text)
+        if options:
+            yield from self._enumerate_matchdays(response, parent, options)
             return
 
-        # Fallback only (no picker on the page): crawl the prev/next nav with the
-        # consecutive-empty tolerance. Reset the streak on any matchday that has
-        # fixtures; otherwise extend it, and stop once K empty pages stack up.
+        # Fallback, only for pages with no picker (cups, or a site-shape change):
+        # crawl the prev/next nav with the consecutive-empty tolerance. Reset the
+        # streak on any matchday that has fixtures; otherwise extend it, and stop
+        # once K empty pages stack up.
         streak = 0 if games else empty_streak + 1
         if streak < self.MAX_EMPTY_STREAK:
             yield from self._follow_matchdays(response, parent, streak)
@@ -242,7 +247,7 @@ class GamesUrlsSpider(BaseSpider):
                 'games_urls: stopping walk after %d empty matchdays at %s',
                 streak, response.url)
 
-    def _enumerate_matchdays(self, response, parent):
+    def _enumerate_matchdays(self, response, parent, options):
         """Yield requests for every unvisited matchday listed by the picker.
 
         This replaces neighbour-walking as the primary strategy. The walk had to
@@ -259,7 +264,7 @@ class GamesUrlsSpider(BaseSpider):
             return
         code, season, _ = scope
         lane = (code, season)
-        for number in matchday_options(response.text):
+        for number in options:
             if self._scope_visits[lane] >= self.MAX_MATCHDAYS_PER_SCOPE:
                 self.logger.warning(
                     'games_urls: per-competition matchday cap (%d) hit for %s '

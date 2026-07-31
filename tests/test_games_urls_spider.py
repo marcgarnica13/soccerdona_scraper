@@ -443,4 +443,31 @@ def test_enumeration_still_respects_the_per_scope_cap():
     out = list(spider.parse_matchday(
         resp(_picker_html(huge), _md_url_for('ESP1', 2025, 1)), parent=PARENT))
     reqs = [o for o in out if isinstance(o, scrapy.Request)]
+    # Non-empty matters: `<= cap` alone is satisfied by zero requests, so the
+    # assertion would pass against a spider with no enumeration at all.
+    assert reqs
     assert len(reqs) <= GamesUrlsSpider.MAX_MATCHDAYS_PER_SCOPE
+
+
+def test_picker_page_never_falls_back_to_the_walk():
+    """A page WITH a picker enumerates, even when everything is already claimed.
+
+    The branch is on picker presence, not on whether enumeration yielded
+    anything. Otherwise the second and later pages of a competition — whose
+    matchdays are all claimed by then — would each drop into the neighbour walk
+    and overrun the season boundary by up to MAX_EMPTY_STREAK pages.
+    """
+    spider = GamesUrlsSpider()
+    page = _picker_html([1, 2, 3], nav_hrefs=(_md_url_for('ESP1', 2025, 99),))
+
+    first = [o for o in spider.parse_matchday(
+        resp(page, _md_url_for('ESP1', 2025, 2)), parent=PARENT)
+        if isinstance(o, scrapy.Request)]
+    assert sorted(int(matchday_key(r.url)[2]) for r in first) == [1, 3]
+
+    # Same competition, another page: everything claimed, so nothing new -- and
+    # crucially no fallback request to the out-of-season matchday 99.
+    second = [o for o in spider.parse_matchday(
+        resp(page, _md_url_for('ESP1', 2025, 1)), parent=PARENT)
+        if isinstance(o, scrapy.Request)]
+    assert second == []
