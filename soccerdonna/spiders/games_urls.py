@@ -31,6 +31,44 @@ def matchday_key(url):
     return match.groups() if match else None
 
 
+# The matchday picker on a matchday-overview page. Its <option> values are the
+# authoritative, complete list of matchday numbers for the season — verified on
+# real pages for ESP1 (1..30), NWSL (1..26) and IRL1 (1..22), contiguous in every
+# case. Options carry bare numbers, not hrefs, so the URL is rebuilt from the
+# current page's own (competition, season).
+SPIELTAG_SELECT_RE = re.compile(
+    r'<select[^>]*name=[\'"]?spieltag[\'"]?[^>]*>(.*?)</select>', re.S | re.I)
+OPTION_VALUE_RE = re.compile(r'<option[^>]*value=[\'"]?([^\'">]*)', re.I)
+
+
+def matchday_options(html):
+    """Every matchday number offered by the page's ``spieltag`` picker.
+
+    Args:
+        html: Raw response text of a matchday-overview page.
+
+    Returns:
+        A sorted list of ints, or ``[]`` when the picker is absent.
+    """
+    select = SPIELTAG_SELECT_RE.search(html or '')
+    if not select:
+        return []
+    values = OPTION_VALUE_RE.findall(select.group(1))
+    return sorted({int(v) for v in values if v.isdigit()})
+
+
+def _matchday_url(current_url, code, season, matchday):
+    """Rebuild a matchday-overview URL for ``matchday`` from the current one.
+
+    The picker's options are bare numbers, so the surrounding URL (including the
+    competition slug) is taken from the page we are standing on and only the
+    trailing matchday number is swapped.
+    """
+    return MATCHDAY_KEY_RE.sub(
+        f'spieltagsuebersicht/wettbewerb_{code}_{season}_{matchday}.html',
+        current_url, count=1)
+
+
 class GamesUrlsSpider(BaseSpider):
     """Competition -> matchday-overview pages -> one lightweight game item per fixture.
 
@@ -40,13 +78,20 @@ class GamesUrlsSpider(BaseSpider):
     the matchday navigation graph; ``parse_matchday`` yields one game item per
     fixture and follows neighbour matchday pages until the season boundary.
 
-    The walk is bounded by *fixture-gated expansion with a consecutive-empty
+    Matchdays are discovered by **enumerating the page's own ``spieltag``
+    picker**, whose options are the complete list of matchday numbers for the
+    season. That is exact and needs no guess about where the season ends.
+
+    The prev/next neighbour walk survives only as a fallback for pages with no
+    picker. It is bounded by *fixture-gated expansion with a consecutive-empty
     tolerance*: a matchday page that has fixtures resets the empty counter and
     expands to its prev/next neighbours; an empty page still expands, but a
     per-branch counter stops the branch after ``MAX_EMPTY_STREAK`` empty pages
-    in a row. This crosses a lone postponed/empty mid-season matchday yet dies a
-    couple of pages past the real season boundary, instead of following the
-    site's never-ending "next matchday" link forever.
+    in a row, instead of following the site's never-ending "next matchday" link
+    forever. That tolerance is why the walk cannot be the primary strategy: a
+    mid-season break longer than ``MAX_EMPTY_STREAK`` is indistinguishable from
+    the season boundary, and in production it truncated DV1S to 8 games while
+    its sibling divisions collected 84 and 87.
 
     Each competition walks its own lane. The visited-set is keyed on the full
     ``(competition_code, season, matchday)`` scope — never the bare matchday
@@ -178,9 +223,17 @@ class GamesUrlsSpider(BaseSpider):
             if game:
                 yield game
 
-        # Reset the empty-streak on any matchday that has fixtures; otherwise
-        # extend it. Stop expanding once K empty pages stack up on this branch —
-        # that is the season boundary (or a site-shape change).
+        # Preferred path: the page's own matchday picker enumerates the whole
+        # season, so fan out to every matchday directly. _claim dedupes, so only
+        # the first page of a competition actually emits requests.
+        enumerated = list(self._enumerate_matchdays(response, parent))
+        if enumerated:
+            yield from enumerated
+            return
+
+        # Fallback only (no picker on the page): crawl the prev/next nav with the
+        # consecutive-empty tolerance. Reset the streak on any matchday that has
+        # fixtures; otherwise extend it, and stop once K empty pages stack up.
         streak = 0 if games else empty_streak + 1
         if streak < self.MAX_EMPTY_STREAK:
             yield from self._follow_matchdays(response, parent, streak)
@@ -188,6 +241,37 @@ class GamesUrlsSpider(BaseSpider):
             self.logger.debug(
                 'games_urls: stopping walk after %d empty matchdays at %s',
                 streak, response.url)
+
+    def _enumerate_matchdays(self, response, parent):
+        """Yield requests for every unvisited matchday listed by the picker.
+
+        This replaces neighbour-walking as the primary strategy. The walk had to
+        guess where the season ended, and ``MAX_EMPTY_STREAK`` made that guess by
+        stopping after two consecutive empty matchdays — which a mid-season break
+        (a cup weekend, an international window, the Swedish midsummer pause)
+        is indistinguishable from. Production 2026-07-30: DV1S collected 8 games
+        over 8 days while its sibling divisions DV1M/DV1N, same calendar and same
+        matchday numbering, collected 84 and 87 across three months. Enumerating
+        the picker removes the guess entirely.
+        """
+        scope = matchday_key(response.url)
+        if not scope:
+            return
+        code, season, _ = scope
+        lane = (code, season)
+        for number in matchday_options(response.text):
+            if self._scope_visits[lane] >= self.MAX_MATCHDAYS_PER_SCOPE:
+                self.logger.warning(
+                    'games_urls: per-competition matchday cap (%d) hit for %s '
+                    'season %s while enumerating - check for a site-shape change',
+                    self.MAX_MATCHDAYS_PER_SCOPE, code, season)
+                return
+            key = (code, season, str(number))
+            if not self._claim(key):
+                continue
+            yield response.follow(
+                _matchday_url(response.url, code, season, number),
+                self.parse_matchday, cb_kwargs={'parent': parent})
 
     def _follow_matchdays(self, response, parent, empty_streak=0):
         """Yield requests for unvisited matchday pages of THIS competition+season.
