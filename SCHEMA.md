@@ -116,7 +116,7 @@ href), so its embedded `parent` is the player reference it was fed.
 | `name_in_home_country` | string \| null | Native-country name.                                            |
 | `date_of_birth`        | string \| null | ISO `YYYY-MM-DD`.                                               |
 | `place_of_birth`       | string \| null | Birthplace.                                                    |
-| `citizenship`          | string \| null | Nationality.                                                   |
+| `citizenship`          | array<string> \| null | Every citizenship, one flag title per entry, in page order (first = primary). `null` when none, never `[]`. |
 | `height`               | string \| null | Height as shown, e.g. `"1,65"` (comma decimal, source format). |
 | `foot`                 | string \| null | `"right"`, `"left"`, `"both"`, …                              |
 | `position`             | string \| null | Playing position.                                              |
@@ -135,7 +135,7 @@ href), so its embedded `parent` is the player reference it was fed.
 | `goals`            | int            | Goals (defaults to `0`).                                    |
 
 ```json
-{"type": "player", "parent": {"type": "player", "href": "/en/gemma-font/profil/spieler_38461.html"}, "source": "soccerdonna", "href": "/en/gemma-font/profil/spieler_38461.html", "player_id": "38461", "name": "Gemma Font", "last_name": "Font", "current_club": {"href": "/en/fc-barcelona/startseite/verein_1132.html"}, "name_in_home_country": "Gemma Font Oliveras", "date_of_birth": "1999-10-23", "place_of_birth": "Tagamanent", "citizenship": "Spain", "height": "1,65", "foot": "right", "position": "Goalkeeper", "current_market_value": 50000, "national_career": [{"national_team_id": "8954", "href": "/en/spanien-u23/startseite/nationalmannschaft_8954.html", "name": "Spanien U23", "season": null, "matches": 4, "goals": 0}]}
+{"type": "player", "parent": {"type": "player", "href": "/en/gemma-font/profil/spieler_38461.html"}, "source": "soccerdonna", "href": "/en/gemma-font/profil/spieler_38461.html", "player_id": "38461", "name": "Gemma Font", "last_name": "Font", "current_club": {"href": "/en/fc-barcelona/startseite/verein_1132.html"}, "name_in_home_country": "Gemma Font Oliveras", "date_of_birth": "1999-10-23", "place_of_birth": "Tagamanent", "citizenship": ["Spain"], "height": "1,65", "foot": "right", "position": "Goalkeeper", "current_market_value": 50000, "national_career": [{"national_team_id": "8954", "href": "/en/spanien-u23/startseite/nationalmannschaft_8954.html", "name": "Spanien U23", "season": null, "matches": 4, "goals": 0}]}
 ```
 
 ---
