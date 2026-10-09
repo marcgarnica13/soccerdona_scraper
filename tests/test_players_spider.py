@@ -47,7 +47,7 @@ def test_gemma_font_profile_fields():
     assert player['href'].endswith('spieler_38461.html')
     assert player['date_of_birth'] == '1999-10-23'   # parsed to ISO
     assert player['position'] == 'Goalkeeper'
-    assert player['citizenship'] == 'Spain'
+    assert player['citizenship'] == ['Spain']
     assert player['foot'] == 'right'
     assert player['height'] == '1,65'
     assert player['current_market_value'] == 50000
@@ -69,6 +69,10 @@ def test_every_player_sample_has_core_fields():
         assert 'national_career' in player, filename
         assert 'current_club' in player, filename
         assert 'last_name' in player, filename
+        # Citizenship is a non-empty list of country names, or None (never []).
+        assert player['citizenship'] is None or (
+            isinstance(player['citizenship'], list) and player['citizenship']
+        ), filename
 
 
 def test_gemma_font_national_career():

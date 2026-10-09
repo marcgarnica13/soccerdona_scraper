@@ -78,7 +78,7 @@ class PlayersSpider(BaseSpider):
             'name_in_home_country': field('Name in native country:'),
             'date_of_birth': parse_date_de(dob_raw),
             'place_of_birth': field('Place of birth:'),
-            'citizenship': field('Nationality:'),
+            'citizenship': self._citizenship(response),
             'height': field('Height:'),
             'foot': field('Foot:'),
             'position': field('Position:'),
@@ -103,6 +103,22 @@ class PlayersSpider(BaseSpider):
             return None
         tokens = name.split()
         return tokens[-1] if tokens else None
+
+    def _citizenship(self, response):
+        """Every citizenship in the Nationality cell, in page order (or None).
+
+        Dual nationals have one flag per country, separated by <br>. Flattening
+        the cell to text would join them into one ambiguous string ("Spain
+        Guine"), and country names can contain spaces or commas ("South Africa",
+        "Korea, South"), so each flag's title is kept as its own list entry.
+        Titles are kept verbatim; None rather than an empty list when there are
+        none.
+        """
+        titles = response.xpath(
+            '//td[normalize-space(text())="Nationality:"]'
+            '/following-sibling::td[1]//img/@title'
+        ).getall()
+        return [t.strip() for t in titles if t and t.strip()] or None
 
     def _current_club(self, response):
         """The player's current club as {'href': <club href>} (or None).
